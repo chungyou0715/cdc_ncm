@@ -51,8 +51,6 @@
 #include <linux/hrtimer.h>
 #include <linux/atomic.h>
 #include <linux/usb/usbnet.h>
-#include <linux/usb/cdc.h>
-#include <linux/usb/cdc_ncm.h>
 #include "cdc.h"
 #include "cdc_ncm.h"
 
@@ -577,6 +575,29 @@ static int cdc_ncm_init(struct usbnet* dev)
 			dev_err(&dev->intf->dev, "SET_NTB_FORMAT failed\n");
 		}
 	}
+
+	err = usbnet_read_cmd(dev, USB_CDC_GET_EXTENDED_CAPABILITY_MODE,
+		USB_TYPE_CLASS | USB_DIR_IN
+		| USB_RECIP_INTERFACE,
+		0, iface_no, &ctx->is_ndpx,2);
+	if (err < 0) {
+		dev_err(&dev->intf->dev, "failed USB_CDC_GET_EXTENDED_CAPABILITY_MODE\n");
+	}else{
+		ctx->is_ndp16 = 0;
+		err = usbnet_write_cmd(dev, USB_CDC_SET_EXTENDED_CAPABILITY_MODE,
+			USB_TYPE_CLASS | USB_DIR_OUT
+			| USB_RECIP_INTERFACE,
+			USB_CDC_NCM_EXTENDED_CAPABILITY_MODE_NCM1P1,
+			iface_no, NULL, 0);
+		ctx->is_ndpx = USB_CDC_NCM_EXTENDED_CAPABILITY_MODE_NCM1P1;
+
+		if (err < 0) {
+			ctx->is_ndp16 = 1;
+			ctx->is_ndpx = USB_CDC_NCM_EXTENDED_CAPABILITY_MODE_NCM1P0;
+			dev_err(&dev->intf->dev, "SET_EXTENDED_CAPABILITY_MODE failed\n");
+		}
+	}
+	
 
 	/* set initial device values */
 	ctx->rx_max = le32_to_cpu(ctx->ncm_parm.dwNtbInMaxSize);
@@ -1665,6 +1686,54 @@ error:
 }
 EXPORT_SYMBOL_GPL(cdc_ncm_rx_verify_nth32);
 
+int cdc_ncm_rx_verify_nthx(struct cdc_ncm_ctx* ctx, struct sk_buff* skb_in)
+{
+	struct usbnet* dev = netdev_priv(skb_in->dev);
+	struct usb_cdc_ncm_nthx* nthx;
+	int len;
+	int ret = -EINVAL;
+
+	if (ctx == NULL)
+		goto error;
+
+	nthx = (struct usb_cdc_ncm_nthx*)skb_in->data;
+/*
+	dev_info(&dev->intf->dev, "nthx->dwSignature = %04X\n", le32_to_cpu(nthx->dwSignature));
+	dev_info(&dev->intf->dev, "nthx->wHeaderLength = %04X\n", le32_to_cpu(nthx->wHeaderLength));
+	dev_info(&dev->intf->dev, "nthx->wSequence = %04X\n", le32_to_cpu(nthx->wSequence));
+	dev_info(&dev->intf->dev, "nthx->dwBlockLength = %04X\n", le32_to_cpu(nthx->dwBlockLength));
+	dev_info(&dev->intf->dev, "nthx->dwNdpIndex = %04X\n", le32_to_cpu(nthx->dwNdpIndex));
+*/
+	if (nthx->dwSignature != cpu_to_le32(USB_CDC_NCM_NTHX_SIGN)) {
+		netif_dbg(dev, rx_err, dev->net,
+			"invalid NTHX signature <%#010x>\n",
+			le32_to_cpu(nthx->dwSignature));
+		goto error;
+	}
+
+	len = le32_to_cpu(nthx->dwBlockLength);
+	if (len > ctx->rx_max) {
+		netif_dbg(dev, rx_err, dev->net,
+			"unsupported NTB block length %u/%u\n", len,
+			ctx->rx_max);
+		goto error;
+	}
+
+	if ((ctx->rx_seq + 1) != le16_to_cpu(nthx->wSequence) &&
+		(ctx->rx_seq || le16_to_cpu(nthx->wSequence)) &&
+		!((ctx->rx_seq == 0xffff) && !le16_to_cpu(nthx->wSequence))) {
+		netif_dbg(dev, rx_err, dev->net,
+			"sequence number glitch prev=%d curr=%d\n",
+			ctx->rx_seq, le16_to_cpu(nthx->wSequence));
+	}
+	ctx->rx_seq = le16_to_cpu(nthx->wSequence);
+
+	ret = le32_to_cpu(nthx->dwNdpIndex);
+error:
+	return ret;
+}
+EXPORT_SYMBOL_GPL(cdc_ncm_rx_verify_nthx);
+
 /* verify NDP header and return number of datagrams, or negative error */
 int cdc_ncm_rx_verify_ndp16(struct sk_buff* skb_in, int ndpoffset)
 {
@@ -1737,6 +1806,7 @@ error:
 }
 EXPORT_SYMBOL_GPL(cdc_ncm_rx_verify_ndp32);
 
+
 int cdc_ncm_rx_fixup(struct usbnet* dev, struct sk_buff* skb_in)
 {
 	struct sk_buff* skb;
@@ -1748,6 +1818,7 @@ int cdc_ncm_rx_fixup(struct usbnet* dev, struct sk_buff* skb_in)
 	union {
 		struct usb_cdc_ncm_ndp16* ndp16;
 		struct usb_cdc_ncm_ndp32* ndp32;
+		struct usb_cdc_ncm_ndpx* ndpx;
 	} ndp;
 	union {
 		struct usb_cdc_ncm_dpe16* dpe16;
@@ -1758,13 +1829,54 @@ int cdc_ncm_rx_fixup(struct usbnet* dev, struct sk_buff* skb_in)
 	int loopcount = 50; /* arbitrary max preventing infinite loop */
 	u32 payload = 0;
 
-	if (ctx->is_ndp16)
-		ndpoffset = cdc_ncm_rx_verify_nth16(ctx, skb_in);
-	else
-		ndpoffset = cdc_ncm_rx_verify_nth32(ctx, skb_in);
-
+	if (ctx->is_ndpx){
+		ndpoffset = cdc_ncm_rx_verify_nthx(ctx, skb_in);
+		goto ndpx_parse;
+	}else{
+		if (ctx->is_ndp16)
+			ndpoffset = cdc_ncm_rx_verify_nth16(ctx, skb_in);
+		else
+			ndpoffset = cdc_ncm_rx_verify_nth32(ctx, skb_in);
+	}
 	if (ndpoffset < 0)
 		goto error;
+
+ndpx_parse:
+	ndp.ndpx = (struct usb_cdc_ncm_ndpx*)(skb_in->data + ndpoffset);
+
+	do{
+		/*
+		dev_info(&dev->intf->dev, "ndp.ndpx->dwSignature = %04X\n", le32_to_cpu(ndp.ndpx->dwSignature));
+		dev_info(&dev->intf->dev, "ndp.ndpx->dwNextNdpOffset = %04X\n", le32_to_cpu(ndp.ndpx->dwNextNdpOffset));
+		dev_info(&dev->intf->dev, "ndp.ndpx->dwDatagramOffset = %04X\n", le32_to_cpu(ndp.ndpx->dwDatagramOffset));
+		dev_info(&dev->intf->dev, "ndp.ndpx->metainfo.rx.Length = %04X\n", le32_to_cpu(ndp.ndpx->metainfo.rx.Length));
+		*/
+		
+		if (ndp.ndpx->dwSignature != cpu_to_le32(USB_CDC_NCM_NDPX_RX_SIGN)) {
+			netif_dbg(dev, rx_err, dev->net,
+				"invalid ndpx signature <%#010x>\n",
+				le32_to_cpu(ndp.ndpx->dwSignature));
+			goto error;
+		}
+
+		/* create a fresh copy to reduce truesize */
+		len = ndp.ndpx->metainfo.rx.Length;
+		offset = ndp.ndpx->dwDatagramOffset;
+
+		skb = netdev_alloc_skb_ip_align(dev->net, len);
+		if (!skb)
+			goto error;
+		skb_put_data(skb, ndp.ndpx + offset, len);
+		usbnet_skb_return(dev, skb);
+		payload += len;	/* count payload bytes in this NTB */
+
+		if (ndp.ndpx->dwNextNdpOffset != 0x0000)
+			ndp.ndpx = (struct usb_cdc_ncm_ndpx*)(ndp.ndpx + ndp.ndpx->dwNextNdpOffset);
+		else
+		    break;
+
+	}while(ndp.ndpx ->dwNextNdpOffset != 0x0000);
+
 
 next_ndp:
 	if (ctx->is_ndp16) {

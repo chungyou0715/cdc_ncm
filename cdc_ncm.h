@@ -119,9 +119,11 @@ struct cdc_ncm_ctx {
 	u32 timer_interval;
 	u32 max_ndp_size;
 	u8 is_ndp16;
+	u16 is_ndpx;
 	union {
 		struct usb_cdc_ncm_ndp16* delayed_ndp16;
 		struct usb_cdc_ncm_ndp32* delayed_ndp32;
+		struct usb_cdc_ncm_ndpx* delayed_ndpx;
 	};
 
 	u32 tx_timer_pending;
@@ -161,6 +163,7 @@ int cdc_ncm_rx_verify_nth16(struct cdc_ncm_ctx* ctx, struct sk_buff* skb_in);
 int cdc_ncm_rx_verify_ndp16(struct sk_buff* skb_in, int ndpoffset);
 int cdc_ncm_rx_verify_nth32(struct cdc_ncm_ctx* ctx, struct sk_buff* skb_in);
 int cdc_ncm_rx_verify_ndp32(struct sk_buff* skb_in, int ndpoffset);
+int cdc_ncm_rx_verify_nthx(struct cdc_ncm_ctx* ctx, struct sk_buff* skb_in);
 struct sk_buff*
 	cdc_ncm_tx_fixup(struct usbnet* dev, struct sk_buff* skb, gfp_t flags);
 int cdc_ncm_rx_fixup(struct usbnet* dev, struct sk_buff* skb_in);
