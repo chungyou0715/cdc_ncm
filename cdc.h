@@ -252,6 +252,11 @@ struct usb_cdc_mbim_extended_desc {
 #define USB_CDC_SET_MAX_DATAGRAM_SIZE		0x88
 #define USB_CDC_GET_CRC_MODE			0x89
 #define USB_CDC_SET_CRC_MODE			0x8a
+#define USB_CDC_GET_EXTENDED_CAPABILITY_MODE			0x8b
+#define USB_CDC_SET_EXTENDED_CAPABILITY_MODE			0x8c
+#define USB_CDC_GET_EXTENDED_CAPABILTIES			0x8d
+#define USB_CDC_GET_EXTENDED_FEATURE			0x8e
+#define USB_CDC_SET_EXTENDED_FEATURE			0x8f
 
  /* Line Coding Structure from CDC spec 6.2.13 */
 struct usb_cdc_line_coding {
@@ -348,8 +353,9 @@ struct usb_cdc_ncm_ntb_parameters {
  * CDC NCM transfer headers, CDC NCM subclass 3.2
  */
 
-#define USB_CDC_NCM_NTH16_SIGN		0x484D434E /* NCMH */
-#define USB_CDC_NCM_NTH32_SIGN		0x686D636E /* ncmh */
+#define USB_CDC_NCM_NTH16_SIGN		0x484D434E /* NCMH16 */
+#define USB_CDC_NCM_NTH32_SIGN		0x686D636E /* NCMH32 */
+#define USB_CDC_NCM_NTHX_SIGN		0x786D636E /* NCMHX */
 
 struct usb_cdc_ncm_nth16 {
 	__le32	dwSignature;
@@ -367,6 +373,13 @@ struct usb_cdc_ncm_nth32 {
 	__le32	dwNdpIndex;
 } __attribute__((packed));
 
+struct usb_cdc_ncm_nthx {
+	__le32	dwSignature;
+	__le16	wHeaderLength;
+	__le16	wSequence;
+	__le32	dwBlockLength;
+	__le32	dwNdpIndex;
+} __attribute__((packed));
 /*
  * CDC NCM datagram pointers, CDC NCM subclass 3.3
  */
@@ -375,6 +388,9 @@ struct usb_cdc_ncm_nth32 {
 #define USB_CDC_NCM_NDP16_NOCRC_SIGN	0x304D434E /* NCM0 */
 #define USB_CDC_NCM_NDP32_CRC_SIGN	0x316D636E /* ncm1 */
 #define USB_CDC_NCM_NDP32_NOCRC_SIGN	0x306D636E /* ncm0 */
+
+#define USB_CDC_NCM_NDPX_TX_SIGN	0x7478636E /* ncmx tx */
+#define USB_CDC_NCM_NDPX_RX_SIGN	0x7278636E /* ncmx rx */
 
 #define USB_CDC_MBIM_NDP16_IPS_SIGN     0x00535049 /* IPS<sessionID> : IPS0 for now */
 #define USB_CDC_MBIM_NDP32_IPS_SIGN     0x00737069 /* ips<sessionID> : ips0 for now */
@@ -409,6 +425,41 @@ struct usb_cdc_ncm_ndp32 {
 	__le32	dwNextNdpIndex;
 	__le32	dwReserved12;
 	struct	usb_cdc_ncm_dpe32 dpe32[];
+} __attribute__((packed));
+
+struct usb_cdc_ncm_metainfo {
+	union {
+		struct {
+			__le32	Length : 20;
+			__le32	Reserved0 : 4;
+			__le16	Flags : 8;
+			__le16	TxRequest;
+			__le16	MSS;
+			__le16	VLAN;
+			__le16	L3Length : 9;
+			__le16	Reserved1 : 7;
+			__le16	L4Length : 8;
+			__le16	L2Length : 7;
+			__le32	Reserved2 : 17;
+		}tx;
+		struct {
+			__le32	Length : 20;
+			__le16	RSSType : 4;
+			__le16	Flags : 8;
+			__le16	RxStatus;
+			__le16	RxErrors;
+			__le16	VLAN;
+			__le16	Reserved1;
+			__le32	RSSHash;
+		}rx;
+	};
+} __attribute__((__packed__));
+
+struct usb_cdc_ncm_ndpx {
+	__le32	dwSignature;
+	__le32	dwNextNdpOffset;
+	__le32	dwDatagramOffset;
+	struct	usb_cdc_ncm_metainfo metainfo;
 } __attribute__((packed));
 
 /* CDC NCM subclass 3.2.1 and 3.2.2 */
