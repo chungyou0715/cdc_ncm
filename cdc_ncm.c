@@ -1876,7 +1876,7 @@ int cdc_ncm_rx_fixup(struct usbnet* dev, struct sk_buff* skb_in)
 		goto error;
 
 ndpx_parse:
-	ndp.ndpx = (struct usb_cdc_ncm_ndpx*)(skb_in->data + ndpoffset);
+	ndp.ndpx = (struct usb_cdc_ncm_ndpx*)(u8*)(skb_in->data + ndpoffset);
 
 	do{
 		/*
@@ -1900,12 +1900,12 @@ ndpx_parse:
 		skb = netdev_alloc_skb_ip_align(dev->net, len);
 		if (!skb)
 			goto error;
-		skb_put_data(skb, ndp.ndpx + offset, len);
+		skb_put_data(skb, (u8*)(ndp.ndpx) + offset, len);
 		usbnet_skb_return(dev, skb);
 		payload += len;	/* count payload bytes in this NTB */
 
 		if (ndp.ndpx->dwNextNdpOffset != 0x0000)
-			ndp.ndpx = (struct usb_cdc_ncm_ndpx*)(ndp.ndpx + ndp.ndpx->dwNextNdpOffset);
+			ndp.ndpx = (struct usb_cdc_ncm_ndpx*)(u8*)(ndp.ndpx + ndp.ndpx->dwNextNdpOffset);
 		else
 		    break;
 
