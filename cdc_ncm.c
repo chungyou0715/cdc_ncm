@@ -1232,17 +1232,19 @@ struct sk_buff*
 	union {
 		struct usb_cdc_ncm_nth16* nth16;
 		struct usb_cdc_ncm_nth32* nth32;
+		struct usb_cdc_ncm_nthx* nthx;
 	} nth;
 	union {
 		struct usb_cdc_ncm_ndp16* ndp16;
 		struct usb_cdc_ncm_ndp32* ndp32;
+		struct usb_cdc_ncm_ndpx* ndpx;
 	} ndp;
 	struct sk_buff* skb_out;
-	u16 n = 0, index, ndplen;
+	u16 n = 0, index, ndplen, i = 0;
 	u8 ready2send = 0;
 	u32 delayed_ndp_size;
 	size_t padding_count;
-
+	//dev_info(&dev->intf->dev, "sk_buff->Data = %04X\n", le32_to_cpu(sk_buff->Data));
 	/* When our NDP gets written in cdc_ncm_ndp(), then skb_out->len gets updated
 	 * accordingly. Otherwise, we should check here.
 	 */
@@ -1302,21 +1304,29 @@ struct sk_buff*
 				goto alloc_failed;
 			ctx->tx_low_mem_val--;
 		}
-		if (ctx->is_ndp16) {
+		if (ctx->is_ndpx){
 			/* fill out the initial 16-bit NTB header */
-			nth.nth16 = skb_put_zero(skb_out, sizeof(struct usb_cdc_ncm_nth16));
-			nth.nth16->dwSignature = cpu_to_le32(USB_CDC_NCM_NTH16_SIGN);
-			nth.nth16->wHeaderLength = cpu_to_le16(sizeof(struct usb_cdc_ncm_nth16));
-			nth.nth16->wSequence = cpu_to_le16(ctx->tx_seq++);
+			nth.nthx = skb_put_zero(skb_out, sizeof(struct usb_cdc_ncm_nthx));
+			nth.nthx->dwSignature = cpu_to_le32(USB_CDC_NCM_NTHX_SIGN);
+			nth.nthx->wHeaderLength = cpu_to_le16(sizeof(struct usb_cdc_ncm_nthx));
+			nth.nthx->wSequence = cpu_to_le16(ctx->tx_seq++);
+			nth.nthx->dwNdpIndex = cpu_to_le16(sizeof(struct usb_cdc_ncm_nthx));
+		}else{
+			if (ctx->is_ndp16) {
+				/* fill out the initial 16-bit NTB header */
+				nth.nth16 = skb_put_zero(skb_out, sizeof(struct usb_cdc_ncm_nth16));
+				nth.nth16->dwSignature = cpu_to_le32(USB_CDC_NCM_NTH16_SIGN);
+				nth.nth16->wHeaderLength = cpu_to_le16(sizeof(struct usb_cdc_ncm_nth16));
+				nth.nth16->wSequence = cpu_to_le16(ctx->tx_seq++);
+			}
+			else {
+				/* fill out the initial 32-bit NTB header */
+				nth.nth32 = skb_put_zero(skb_out, sizeof(struct usb_cdc_ncm_nth32));
+				nth.nth32->dwSignature = cpu_to_le32(USB_CDC_NCM_NTH32_SIGN);
+				nth.nth32->wHeaderLength = cpu_to_le16(sizeof(struct usb_cdc_ncm_nth32));
+				nth.nth32->wSequence = cpu_to_le16(ctx->tx_seq++);
+			}
 		}
-		else {
-			/* fill out the initial 32-bit NTB header */
-			nth.nth32 = skb_put_zero(skb_out, sizeof(struct usb_cdc_ncm_nth32));
-			nth.nth32->dwSignature = cpu_to_le32(USB_CDC_NCM_NTH32_SIGN);
-			nth.nth32->wHeaderLength = cpu_to_le16(sizeof(struct usb_cdc_ncm_nth32));
-			nth.nth32->wSequence = cpu_to_le16(ctx->tx_seq++);
-		}
-
 		/* count total number of frames in this NTB */
 		ctx->tx_curr_frame_num = 0;
 
@@ -1330,63 +1340,70 @@ struct sk_buff*
 			skb = ctx->tx_rem_skb;
 			sign = ctx->tx_rem_sign;
 			ctx->tx_rem_skb = NULL;
-
 			/* check for end of skb */
 			if (skb == NULL)
 				break;
 		}
 
 		/* get the appropriate NDP for this skb */
-		if (ctx->is_ndp16)
-			ndp.ndp16 = cdc_ncm_ndp16(ctx, skb_out, sign, skb->len + ctx->tx_modulus + ctx->tx_remainder);
-		else
-			ndp.ndp32 = cdc_ncm_ndp32(ctx, skb_out, sign, skb->len + ctx->tx_modulus + ctx->tx_remainder);
+		if (ctx->is_ndpx == 0){
+			if (ctx->is_ndp16)
+				ndp.ndp16 = cdc_ncm_ndp16(ctx, skb_out, sign, skb->len + ctx->tx_modulus + ctx->tx_remainder);
+			else
+				ndp.ndp32 = cdc_ncm_ndp32(ctx, skb_out, sign, skb->len + ctx->tx_modulus + ctx->tx_remainder);
+			/* align beginning of next frame */
+			cdc_ncm_align_tail(skb_out, ctx->tx_modulus, ctx->tx_remainder, ctx->tx_curr_size);
 
-		/* align beginning of next frame */
-		cdc_ncm_align_tail(skb_out, ctx->tx_modulus, ctx->tx_remainder, ctx->tx_curr_size);
-
-		/* check if we had enough room left for both NDP and frame */
-		if ((ctx->is_ndp16 && !ndp.ndp16) || (!ctx->is_ndp16 && !ndp.ndp32) ||
-			skb_out->len + skb->len + delayed_ndp_size > ctx->tx_curr_size) {
-			if (n == 0) {
-				/* won't fit, MTU problem? */
-				dev_kfree_skb_any(skb);
-				skb = NULL;
-				dev->net->stats.tx_dropped++;
-			}
-			else {
-				/* no room for skb - store for later */
-				if (ctx->tx_rem_skb != NULL) {
-					dev_kfree_skb_any(ctx->tx_rem_skb);
+			/* check if we had enough room left for both NDP and frame */
+			if ((ctx->is_ndp16 && !ndp.ndp16) || (!ctx->is_ndp16 && !ndp.ndp32) ||
+				skb_out->len + skb->len + delayed_ndp_size > ctx->tx_curr_size) {
+				if (n == 0) {
+					/* won't fit, MTU problem? */
+					dev_kfree_skb_any(skb);
+					skb = NULL;
 					dev->net->stats.tx_dropped++;
 				}
-				ctx->tx_rem_skb = skb;
-				ctx->tx_rem_sign = sign;
-				skb = NULL;
-				ready2send = 1;
-				ctx->tx_reason_ntb_full++;	/* count reason for transmitting */
+				else {
+					/* no room for skb - store for later */
+					if (ctx->tx_rem_skb != NULL) {
+						dev_kfree_skb_any(ctx->tx_rem_skb);
+						dev->net->stats.tx_dropped++;
+					}
+					ctx->tx_rem_skb = skb;
+					ctx->tx_rem_sign = sign;
+					skb = NULL;
+					ready2send = 1;
+					ctx->tx_reason_ntb_full++;	/* count reason for transmitting */
+				}
+				break;
 			}
-			break;
+			/* calculate frame number within this NDP */
+			if (ctx->is_ndp16) {
+				ndplen = le16_to_cpu(ndp.ndp16->wLength);
+				index = (ndplen - sizeof(struct usb_cdc_ncm_ndp16)) / sizeof(struct usb_cdc_ncm_dpe16) - 1;
+
+				/* OK, add this skb */
+				ndp.ndp16->dpe16[index].wDatagramLength = cpu_to_le16(skb->len);
+				ndp.ndp16->dpe16[index].wDatagramIndex = cpu_to_le16(skb_out->len);
+				ndp.ndp16->wLength = cpu_to_le16(ndplen + sizeof(struct usb_cdc_ncm_dpe16));
+			}
+			else {
+				ndplen = le16_to_cpu(ndp.ndp32->wLength);
+				index = (ndplen - sizeof(struct usb_cdc_ncm_ndp32)) / sizeof(struct usb_cdc_ncm_dpe32) - 1;
+
+				ndp.ndp32->dpe32[index].dwDatagramLength = cpu_to_le32(skb->len);
+				ndp.ndp32->dpe32[index].dwDatagramIndex = cpu_to_le32(skb_out->len);
+				ndp.ndp32->wLength = cpu_to_le16(ndplen + sizeof(struct usb_cdc_ncm_dpe32));
+			}
+
+		}else{
+			ndp.ndpx = skb_put_zero(skb_out, sizeof(struct usb_cdc_ncm_ndpx));
+			ndp.ndpx->dwSignature = sign;
+			ndp.ndpx->dwDatagramOffset = sizeof(struct usb_cdc_ncm_ndpx) ;
+			ndp.ndpx->metainfo.tx.Length = skb->len;
+			ndp.ndpx->dwNextNdpOffset = sizeof(struct usb_cdc_ncm_ndpx) + skb->len;
 		}
 
-		/* calculate frame number within this NDP */
-		if (ctx->is_ndp16) {
-			ndplen = le16_to_cpu(ndp.ndp16->wLength);
-			index = (ndplen - sizeof(struct usb_cdc_ncm_ndp16)) / sizeof(struct usb_cdc_ncm_dpe16) - 1;
-
-			/* OK, add this skb */
-			ndp.ndp16->dpe16[index].wDatagramLength = cpu_to_le16(skb->len);
-			ndp.ndp16->dpe16[index].wDatagramIndex = cpu_to_le16(skb_out->len);
-			ndp.ndp16->wLength = cpu_to_le16(ndplen + sizeof(struct usb_cdc_ncm_dpe16));
-		}
-		else {
-			ndplen = le16_to_cpu(ndp.ndp32->wLength);
-			index = (ndplen - sizeof(struct usb_cdc_ncm_ndp32)) / sizeof(struct usb_cdc_ncm_dpe32) - 1;
-
-			ndp.ndp32->dpe32[index].dwDatagramLength = cpu_to_le32(skb->len);
-			ndp.ndp32->dpe32[index].dwDatagramIndex = cpu_to_le32(skb_out->len);
-			ndp.ndp32->wLength = cpu_to_le16(ndplen + sizeof(struct usb_cdc_ncm_dpe32));
-		}
 		skb_put_data(skb_out, skb->data, skb->len);
 		ctx->tx_curr_frame_payload += skb->len;	/* count real tx payload data */
 		dev_kfree_skb_any(skb);
@@ -1435,22 +1452,24 @@ struct sk_buff*
 
 	/* If requested, put NDP at end of frame. */
 	if (ctx->drvflags & CDC_NCM_FLAG_NDP_TO_END) {
-		if (ctx->is_ndp16) {
-			nth.nth16 = (struct usb_cdc_ncm_nth16*)skb_out->data;
-			cdc_ncm_align_tail(skb_out, ctx->tx_ndp_modulus, 0, ctx->tx_curr_size - ctx->max_ndp_size);
-			nth.nth16->wNdpIndex = cpu_to_le16(skb_out->len);
-			skb_put_data(skb_out, ctx->delayed_ndp16, ctx->max_ndp_size);
+		if (ctx->is_ndpx == 0){
+			if (ctx->is_ndp16) {
+				nth.nth16 = (struct usb_cdc_ncm_nth16*)skb_out->data;
+				cdc_ncm_align_tail(skb_out, ctx->tx_ndp_modulus, 0, ctx->tx_curr_size - ctx->max_ndp_size);
+				nth.nth16->wNdpIndex = cpu_to_le16(skb_out->len);
+				skb_put_data(skb_out, ctx->delayed_ndp16, ctx->max_ndp_size);
 
-			/* Zero out delayed NDP - signature checking will naturally fail. */
-			ndp.ndp16 = memset(ctx->delayed_ndp16, 0, ctx->max_ndp_size);
-		}
-		else {
-			nth.nth32 = (struct usb_cdc_ncm_nth32*)skb_out->data;
-			cdc_ncm_align_tail(skb_out, ctx->tx_ndp_modulus, 0, ctx->tx_curr_size - ctx->max_ndp_size);
-			nth.nth32->dwNdpIndex = cpu_to_le32(skb_out->len);
-			skb_put_data(skb_out, ctx->delayed_ndp32, ctx->max_ndp_size);
+				/* Zero out delayed NDP - signature checking will naturally fail. */
+				ndp.ndp16 = memset(ctx->delayed_ndp16, 0, ctx->max_ndp_size);
+			}
+			else {
+				nth.nth32 = (struct usb_cdc_ncm_nth32*)skb_out->data;
+				cdc_ncm_align_tail(skb_out, ctx->tx_ndp_modulus, 0, ctx->tx_curr_size - ctx->max_ndp_size);
+				nth.nth32->dwNdpIndex = cpu_to_le32(skb_out->len);
+				skb_put_data(skb_out, ctx->delayed_ndp32, ctx->max_ndp_size);
 
-			ndp.ndp32 = memset(ctx->delayed_ndp32, 0, ctx->max_ndp_size);
+				ndp.ndp32 = memset(ctx->delayed_ndp32, 0, ctx->max_ndp_size);
+			}
 		}
 	}
 
@@ -1475,13 +1494,26 @@ struct sk_buff*
 	}
 
 	/* set final frame length */
-	if (ctx->is_ndp16) {
-		nth.nth16 = (struct usb_cdc_ncm_nth16*)skb_out->data;
-		nth.nth16->wBlockLength = cpu_to_le16(skb_out->len);
-	}
-	else {
-		nth.nth32 = (struct usb_cdc_ncm_nth32*)skb_out->data;
-		nth.nth32->dwBlockLength = cpu_to_le32(skb_out->len);
+	if (ctx->is_ndpx == 0){
+		if (ctx->is_ndp16) {
+			nth.nth16 = (struct usb_cdc_ncm_nth16*)skb_out->data;
+			nth.nth16->wBlockLength = cpu_to_le16(skb_out->len);
+		}
+		else {
+			nth.nth32 = (struct usb_cdc_ncm_nth32*)skb_out->data;
+			nth.nth32->dwBlockLength = cpu_to_le32(skb_out->len);
+		}
+	}else{
+		nth.nthx = (struct usb_cdc_ncm_nthx*)skb_out->data;
+		nth.nthx->dwBlockLength = cpu_to_le32(skb_out->len);
+		ndp.ndpx = (struct usb_cdc_ncm_ndpx*)((u8 *)nth.nthx + nth.nthx->dwNdpIndex);
+		for (i = 1; i <= n; i++){
+			if (i==n){
+				ndp.ndpx->dwNextNdpOffset = cpu_to_le32(0x00000000);
+				break;
+			}
+			ndp.ndpx = (struct usb_cdc_ncm_ndpx*)((u8 *)ndp.ndpx + ndp.ndpx->dwNextNdpOffset);
+		}
 	}
 
 	/* return skb */
@@ -1572,12 +1604,14 @@ struct sk_buff*
 		goto error;
 
 	spin_lock_bh(&ctx->mtx);
-
-	if (ctx->is_ndp16)
-		skb_out = cdc_ncm_fill_tx_frame(dev, skb, cpu_to_le32(USB_CDC_NCM_NDP16_NOCRC_SIGN));
-	else
-		skb_out = cdc_ncm_fill_tx_frame(dev, skb, cpu_to_le32(USB_CDC_NCM_NDP32_NOCRC_SIGN));
-
+	if (ctx->is_ndpx){
+		skb_out = cdc_ncm_fill_tx_frame(dev, skb, cpu_to_le32(USB_CDC_NCM_NDPX_TX_SIGN));
+	}else{
+		if (ctx->is_ndp16)
+			skb_out = cdc_ncm_fill_tx_frame(dev, skb, cpu_to_le32(USB_CDC_NCM_NDP16_NOCRC_SIGN));
+		else
+			skb_out = cdc_ncm_fill_tx_frame(dev, skb, cpu_to_le32(USB_CDC_NCM_NDP32_NOCRC_SIGN));
+	}
 	spin_unlock_bh(&ctx->mtx);
 	return skb_out;
 
