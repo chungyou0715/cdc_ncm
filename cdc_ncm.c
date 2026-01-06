@@ -1240,7 +1240,7 @@ struct sk_buff*
 		struct usb_cdc_ncm_ndpx* ndpx;
 	} ndp;
 	struct sk_buff* skb_out;
-	u16 n = 0, index, ndplen, i = 0;
+	u16 n = 0, index, ndplen, i = 0, padding_num = 0;
 	u8 ready2send = 0;
 	u32 delayed_ndp_size;
 	size_t padding_count;
@@ -1397,14 +1397,20 @@ struct sk_buff*
 			}
 
 		}else{
-			ndp.ndpx = skb_put_zero(skb_out, sizeof(struct usb_cdc_ncm_ndpx));
+			ndp.ndpx = skb_put_zero(skb_out, (sizeof(struct usb_cdc_ncm_ndpx) + 4));
 			ndp.ndpx->dwSignature = sign;
-			ndp.ndpx->dwDatagramOffset = sizeof(struct usb_cdc_ncm_ndpx) ;
+			ndp.ndpx->dwDatagramOffset = (sizeof(struct usb_cdc_ncm_ndpx) + 4);
 			ndp.ndpx->metainfo.tx.Length = skb->len;
+			ndp.ndpx->metainfo.tx.TxRequest = 1;
 			ndp.ndpx->dwNextNdpOffset = sizeof(struct usb_cdc_ncm_ndpx) + skb->len;
+			padding_num = (4 - (ndp.ndpx->dwNextNdpOffset % 4));
+			ndp.ndpx->dwNextNdpOffset = ndp.ndpx->dwNextNdpOffset + padding_num;
 		}
 
 		skb_put_data(skb_out, skb->data, skb->len);
+		if (padding_num > 0){
+			skb_put_zero(skb_out, padding_num);
+		}
 		ctx->tx_curr_frame_payload += skb->len;	/* count real tx payload data */
 		dev_kfree_skb_any(skb);
 		skb = NULL;
