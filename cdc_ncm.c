@@ -1402,8 +1402,8 @@ struct sk_buff*
 			ndp.ndpx->dwDatagramOffset = (sizeof(struct usb_cdc_ncm_ndpx) + 4);
 			ndp.ndpx->metainfo.tx.Length = skb->len;
 			ndp.ndpx->metainfo.tx.TxRequest = 1;
-			ndp.ndpx->dwNextNdpOffset = sizeof(struct usb_cdc_ncm_ndpx) + skb->len;
-			padding_num = (4 - (ndp.ndpx->dwNextNdpOffset % 4));
+			ndp.ndpx->dwNextNdpOffset = sizeof(struct usb_cdc_ncm_ndpx) + skb->len + 4 ;
+			padding_num = (16 - (ndp.ndpx->dwNextNdpOffset % 16));
 			ndp.ndpx->dwNextNdpOffset = ndp.ndpx->dwNextNdpOffset + padding_num;
 		}
 
@@ -1737,13 +1737,13 @@ int cdc_ncm_rx_verify_nthx(struct cdc_ncm_ctx* ctx, struct sk_buff* skb_in)
 		goto error;
 
 	nthx = (struct usb_cdc_ncm_nthx*)skb_in->data;
-/*
+
 	dev_info(&dev->intf->dev, "nthx->dwSignature = %04X\n", le32_to_cpu(nthx->dwSignature));
 	dev_info(&dev->intf->dev, "nthx->wHeaderLength = %04X\n", le32_to_cpu(nthx->wHeaderLength));
 	dev_info(&dev->intf->dev, "nthx->wSequence = %04X\n", le32_to_cpu(nthx->wSequence));
 	dev_info(&dev->intf->dev, "nthx->dwBlockLength = %04X\n", le32_to_cpu(nthx->dwBlockLength));
 	dev_info(&dev->intf->dev, "nthx->dwNdpIndex = %04X\n", le32_to_cpu(nthx->dwNdpIndex));
-*/
+
 	if (nthx->dwSignature != cpu_to_le32(USB_CDC_NCM_NTHX_SIGN)) {
 		netif_dbg(dev, rx_err, dev->net,
 			"invalid NTHX signature <%#010x>\n",
@@ -1865,7 +1865,7 @@ int cdc_ncm_rx_fixup(struct usbnet* dev, struct sk_buff* skb_in)
 		struct usb_cdc_ncm_dpe32* dpe32;
 	} dpe;
 
-	int ndpoffset;
+	int ndpoffset, breakflag = 0;
 	int loopcount = 50; /* arbitrary max preventing infinite loop */
 	u32 payload = 0;
 
@@ -1882,16 +1882,18 @@ int cdc_ncm_rx_fixup(struct usbnet* dev, struct sk_buff* skb_in)
 		goto error;
 
 ndpx_parse:
-	ndp.ndpx = (struct usb_cdc_ncm_ndpx*)(u8*)(skb_in->data + ndpoffset);
 
-	do{
-		/*
+	while(1){
+		ndp.ndpx = (struct usb_cdc_ncm_ndpx*)(u8*)(skb_in->data + ndpoffset);
+
 		dev_info(&dev->intf->dev, "ndp.ndpx->dwSignature = %04X\n", le32_to_cpu(ndp.ndpx->dwSignature));
 		dev_info(&dev->intf->dev, "ndp.ndpx->dwNextNdpOffset = %04X\n", le32_to_cpu(ndp.ndpx->dwNextNdpOffset));
 		dev_info(&dev->intf->dev, "ndp.ndpx->dwDatagramOffset = %04X\n", le32_to_cpu(ndp.ndpx->dwDatagramOffset));
 		dev_info(&dev->intf->dev, "ndp.ndpx->metainfo.rx.Length = %04X\n", le32_to_cpu(ndp.ndpx->metainfo.rx.Length));
-		*/
-		
+
+		if (ndp.ndpx->dwNextNdpOffset == 0x0000)
+			breakflag = 1;
+
 		if (ndp.ndpx->dwSignature != cpu_to_le32(USB_CDC_NCM_NDPX_RX_SIGN)) {
 			netif_dbg(dev, rx_err, dev->net,
 				"invalid ndpx signature <%#010x>\n",
@@ -1910,12 +1912,11 @@ ndpx_parse:
 		usbnet_skb_return(dev, skb);
 		payload += len;	/* count payload bytes in this NTB */
 
-		if (ndp.ndpx->dwNextNdpOffset != 0x0000)
-			ndp.ndpx = (struct usb_cdc_ncm_ndpx*)(u8*)(ndp.ndpx + ndp.ndpx->dwNextNdpOffset);
+		if (breakflag == 1)
+			break;
 		else
-		    break;
-
-	}while(ndp.ndpx ->dwNextNdpOffset != 0x0000);
+			ndpoffset = ndpoffset + ndp.ndpx->dwNextNdpOffset;
+	}
 
 
 next_ndp:
