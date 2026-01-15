@@ -51,6 +51,10 @@
 #include <linux/hrtimer.h>
 #include <linux/atomic.h>
 #include <linux/usb/usbnet.h>
+#include <linux/ip.h>
+#include <linux/ipv6.h>
+#include <linux/tcp.h>
+#include <linux/udp.h>
 #include "cdc.h"
 #include "cdc_ncm.h"
 
@@ -594,7 +598,10 @@ static int cdc_ncm_init(struct usbnet* dev)
 		if (err < 0) {
 			ctx->is_ndp16 = 1;
 			ctx->is_ndpx = USB_CDC_NCM_EXTENDED_CAPABILITY_MODE_NCM1P0;
-			dev_err(&dev->intf->dev, "SET_EXTENDED_CAPABILITY_MODE failed\n");
+			dev_err(&dev->intf->dev, "SET_EXTENDED_CAPABILITY_MODE failed!\n");
+		}else{
+
+			dev_info(&dev->intf->dev, "SET_EXTENDED_CAPABILITY_MODE Success!\n");
 		}
 	}
 	
@@ -1244,6 +1251,12 @@ struct sk_buff*
 	u8 ready2send = 0;
 	u32 delayed_ndp_size;
 	size_t padding_count;
+	struct ethhdr *eth;
+	struct iphdr *ip;
+	struct ipv6hdr *ipv6 ;
+	struct tcphdr *tcp;
+	struct udphdr *udp;
+	unsigned int l2_len = 0 , l3_len = 0, l4_len = 0;
 	//dev_info(&dev->intf->dev, "sk_buff->Data = %04X\n", le32_to_cpu(sk_buff->Data));
 	/* When our NDP gets written in cdc_ncm_ndp(), then skb_out->len gets updated
 	 * accordingly. Otherwise, we should check here.
@@ -1401,7 +1414,47 @@ struct sk_buff*
 			ndp.ndpx->dwSignature = sign;
 			ndp.ndpx->dwDatagramOffset = (sizeof(struct usb_cdc_ncm_ndpx) + 4);
 			ndp.ndpx->metainfo.tx.Length = skb->len;
-			ndp.ndpx->metainfo.tx.TxRequest = 1;
+			ndp.ndpx->metainfo.tx.TxRequest = 0x0001; // Append CRC
+			/*Get the skb ether header, include DMAC. SMAC and ethertype*/
+			eth = eth_hdr(skb);
+			l2_len = sizeof(struct ethhdr); // Get the skb ether header length
+
+			if (eth->h_proto == htons(ETH_P_IP)){ //if the skb is IPv4, get the IPv4 header and header leagth
+				ip = ip_hdr(skb);
+				l3_len = ip->ihl * 4;
+				ndp.ndpx->metainfo.tx.Flags |=0x08;//flag IPv4
+				ndp.ndpx->metainfo.tx.TxRequest |= 0x0002;//TxRequest IPv4 checksum
+				if (ip->protocol == IPPROTO_TCP){ //if the skb is TCP, get the TCP header and header leagth
+					tcp = tcp_hdr(skb);
+					l4_len = tcp->doff * 4;
+					ndp.ndpx->metainfo.tx.Flags |=0x02;//flag TCP
+					ndp.ndpx->metainfo.tx.TxRequest |= 0x0004;
+				}else if (ip->protocol == IPPROTO_UDP){//if the skb is UDP, get the UDP header and header leagth
+					udp = udp_hdr(skb);
+					l4_len = 8;
+					ndp.ndpx->metainfo.tx.Flags |=0x03;//flag UDP
+					ndp.ndpx->metainfo.tx.TxRequest |= 0x0004;
+				}
+			}else if (eth->h_proto == htons(ETH_P_IPV6)){//if the skb is IPv6, get the IPv6 header and header leagth
+				ipv6 = ipv6_hdr(skb);
+				l3_len = sizeof(struct ipv6hdr);
+				ndp.ndpx->metainfo.tx.Flags |=0x0C;//flag IPv6
+				if (ipv6->nexthdr == IPPROTO_TCP){ //if the skb is TCP, get the TCP header and header leagth
+					tcp = tcp_hdr(skb);
+					l4_len = tcp->doff * 4;
+					ndp.ndpx->metainfo.tx.Flags |=0x02;//flag TCP
+					ndp.ndpx->metainfo.tx.TxRequest |= 0x0004;
+				}else if (ipv6->nexthdr == IPPROTO_UDP){//if the skb is UDP, get the UDP header and header leagth
+					udp = udp_hdr(skb);
+					l4_len = 8;
+					ndp.ndpx->metainfo.tx.Flags |=0x03;//flag UDP
+					ndp.ndpx->metainfo.tx.TxRequest |= 0x0004;
+				}
+			}
+			ndp.ndpx->metainfo.tx.L2Length = l2_len;
+			ndp.ndpx->metainfo.tx.L3Length = l3_len;
+			ndp.ndpx->metainfo.tx.L4Length = l4_len;
+
 			ndp.ndpx->dwNextNdpOffset = sizeof(struct usb_cdc_ncm_ndpx) + skb->len + 4 ;
 			padding_num = (16 - (ndp.ndpx->dwNextNdpOffset % 16));
 			ndp.ndpx->dwNextNdpOffset = ndp.ndpx->dwNextNdpOffset + padding_num;
@@ -1737,13 +1790,13 @@ int cdc_ncm_rx_verify_nthx(struct cdc_ncm_ctx* ctx, struct sk_buff* skb_in)
 		goto error;
 
 	nthx = (struct usb_cdc_ncm_nthx*)skb_in->data;
-
+/*
 	dev_info(&dev->intf->dev, "nthx->dwSignature = %04X\n", le32_to_cpu(nthx->dwSignature));
 	dev_info(&dev->intf->dev, "nthx->wHeaderLength = %04X\n", le32_to_cpu(nthx->wHeaderLength));
 	dev_info(&dev->intf->dev, "nthx->wSequence = %04X\n", le32_to_cpu(nthx->wSequence));
 	dev_info(&dev->intf->dev, "nthx->dwBlockLength = %04X\n", le32_to_cpu(nthx->dwBlockLength));
 	dev_info(&dev->intf->dev, "nthx->dwNdpIndex = %04X\n", le32_to_cpu(nthx->dwNdpIndex));
-
+*/
 	if (nthx->dwSignature != cpu_to_le32(USB_CDC_NCM_NTHX_SIGN)) {
 		netif_dbg(dev, rx_err, dev->net,
 			"invalid NTHX signature <%#010x>\n",
@@ -1885,12 +1938,12 @@ ndpx_parse:
 
 	while(1){
 		ndp.ndpx = (struct usb_cdc_ncm_ndpx*)(u8*)(skb_in->data + ndpoffset);
-
+/*
 		dev_info(&dev->intf->dev, "ndp.ndpx->dwSignature = %04X\n", le32_to_cpu(ndp.ndpx->dwSignature));
 		dev_info(&dev->intf->dev, "ndp.ndpx->dwNextNdpOffset = %04X\n", le32_to_cpu(ndp.ndpx->dwNextNdpOffset));
 		dev_info(&dev->intf->dev, "ndp.ndpx->dwDatagramOffset = %04X\n", le32_to_cpu(ndp.ndpx->dwDatagramOffset));
 		dev_info(&dev->intf->dev, "ndp.ndpx->metainfo.rx.Length = %04X\n", le32_to_cpu(ndp.ndpx->metainfo.rx.Length));
-
+*/
 		if (ndp.ndpx->dwNextNdpOffset == 0x0000)
 			breakflag = 1;
 
