@@ -302,6 +302,7 @@ struct usb_cdc_line_coding {
 #define USB_CDC_NOTIFY_RESPONSE_AVAILABLE	0x01
 #define USB_CDC_NOTIFY_SERIAL_STATE		0x20
 #define USB_CDC_NOTIFY_SPEED_CHANGE		0x2a
+#define USB_CDC_NOTIFY_UNIFIED_MEDIUM_STATE		0x2B
 
 struct usb_cdc_notification {
 	__u8	bmRequestType;
@@ -324,6 +325,14 @@ struct usb_cdc_speed_change {
 	__le32	DLBitRRate;	/* contains the downlink bit rate (IN pipe) */
 	__le32	ULBitRate;	/* contains the uplink bit rate (OUT pipe) */
 } __attribute__((packed));
+
+struct usb_cdc_ncm_medium_struct {
+	__u8 bMediumType;
+	__u8 bmFeatureFlags;
+	__le32	dwSpeed;
+	__le32	bmMediumParameters;
+} __attribute__((packed));
+
 
 /*-------------------------------------------------------------------------*/
 

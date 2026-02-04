@@ -586,6 +586,8 @@ static int cdc_ncm_init(struct usbnet* dev)
 		0, iface_no, &ctx->is_ndpx,2);
 	if (err < 0) {
 		dev_err(&dev->intf->dev, "failed USB_CDC_GET_EXTENDED_CAPABILITY_MODE\n");
+		ctx->is_ndp16 = 1;
+		ctx->is_ndpx = 0;
 	}else{
 		ctx->is_ndp16 = 0;
 		err = usbnet_write_cmd(dev, USB_CDC_SET_EXTENDED_CAPABILITY_MODE,
@@ -1933,45 +1935,6 @@ int cdc_ncm_rx_fixup(struct usbnet* dev, struct sk_buff* skb_in)
 	}
 	if (ndpoffset < 0)
 		goto error;
-
-ndpx_parse:
-
-	while(1){
-		ndp.ndpx = (struct usb_cdc_ncm_ndpx*)(u8*)(skb_in->data + ndpoffset);
-/*
-		dev_info(&dev->intf->dev, "ndp.ndpx->dwSignature = %04X\n", le32_to_cpu(ndp.ndpx->dwSignature));
-		dev_info(&dev->intf->dev, "ndp.ndpx->dwNextNdpOffset = %04X\n", le32_to_cpu(ndp.ndpx->dwNextNdpOffset));
-		dev_info(&dev->intf->dev, "ndp.ndpx->dwDatagramOffset = %04X\n", le32_to_cpu(ndp.ndpx->dwDatagramOffset));
-		dev_info(&dev->intf->dev, "ndp.ndpx->metainfo.rx.Length = %04X\n", le32_to_cpu(ndp.ndpx->metainfo.rx.Length));
-*/
-		if (ndp.ndpx->dwNextNdpOffset == 0x0000)
-			breakflag = 1;
-
-		if (ndp.ndpx->dwSignature != cpu_to_le32(USB_CDC_NCM_NDPX_RX_SIGN)) {
-			netif_dbg(dev, rx_err, dev->net,
-				"invalid ndpx signature <%#010x>\n",
-				le32_to_cpu(ndp.ndpx->dwSignature));
-			goto error;
-		}
-
-		/* create a fresh copy to reduce truesize */
-		len = ndp.ndpx->metainfo.rx.Length;
-		offset = ndp.ndpx->dwDatagramOffset;
-
-		skb = netdev_alloc_skb_ip_align(dev->net, len);
-		if (!skb)
-			goto error;
-		skb_put_data(skb, (u8*)(ndp.ndpx) + offset, len);
-		usbnet_skb_return(dev, skb);
-		payload += len;	/* count payload bytes in this NTB */
-
-		if (breakflag == 1)
-			break;
-		else
-			ndpoffset = ndpoffset + ndp.ndpx->dwNextNdpOffset;
-	}
-
-
 next_ndp:
 	if (ctx->is_ndp16) {
 		nframes = cdc_ncm_rx_verify_ndp16(skb_in, ndpoffset);
@@ -2065,6 +2028,43 @@ err_ndp:
 	ctx->rx_ntbs++;
 
 	return 1;
+ndpx_parse:
+
+	while(1){
+		ndp.ndpx = (struct usb_cdc_ncm_ndpx*)(u8*)(skb_in->data + ndpoffset);
+/*
+		dev_info(&dev->intf->dev, "ndp.ndpx->dwSignature = %04X\n", le32_to_cpu(ndp.ndpx->dwSignature));
+		dev_info(&dev->intf->dev, "ndp.ndpx->dwNextNdpOffset = %04X\n", le32_to_cpu(ndp.ndpx->dwNextNdpOffset));
+		dev_info(&dev->intf->dev, "ndp.ndpx->dwDatagramOffset = %04X\n", le32_to_cpu(ndp.ndpx->dwDatagramOffset));
+		dev_info(&dev->intf->dev, "ndp.ndpx->metainfo.rx.Length = %04X\n", le32_to_cpu(ndp.ndpx->metainfo.rx.Length));
+*/
+		if (ndp.ndpx->dwNextNdpOffset == 0x0000)
+			breakflag = 1;
+
+		if (ndp.ndpx->dwSignature != cpu_to_le32(USB_CDC_NCM_NDPX_RX_SIGN)) {
+			netif_dbg(dev, rx_err, dev->net,
+				"invalid ndpx signature <%#010x>\n",
+				le32_to_cpu(ndp.ndpx->dwSignature));
+			goto error;
+		}
+
+		/* create a fresh copy to reduce truesize */
+		len = ndp.ndpx->metainfo.rx.Length;
+		offset = ndp.ndpx->dwDatagramOffset;
+
+		skb = netdev_alloc_skb_ip_align(dev->net, len);
+		if (!skb)
+			goto error;
+		skb_put_data(skb, (u8*)(ndp.ndpx) + offset, len);
+		usbnet_skb_return(dev, skb);
+		payload += len;	/* count payload bytes in this NTB */
+
+		if (breakflag == 1)
+			break;
+		else
+			ndpoffset = ndpoffset + ndp.ndpx->dwNextNdpOffset;
+	}
+
 error:
 	return 0;
 }
@@ -2082,6 +2082,8 @@ cdc_ncm_speed_change(struct usbnet* dev,
 static void cdc_ncm_status(struct usbnet* dev, struct urb* urb)
 {
 	struct usb_cdc_notification* event;
+	struct usb_cdc_ncm_medium_struct* medium_struct;
+	__u8 linkok;
 
 	if (urb->actual_length < sizeof(*event))
 		return;
@@ -2094,7 +2096,13 @@ static void cdc_ncm_status(struct usbnet* dev, struct urb* urb)
 	}
 
 	event = urb->transfer_buffer;
-
+/*
+	dev_info(&dev->intf->dev, "event->bmRequestType = %04X\n", le32_to_cpu(event->bmRequestType));
+	dev_info(&dev->intf->dev, "event->bNotificationType = %04X\n", le32_to_cpu(event->bNotificationType));
+	dev_info(&dev->intf->dev, "event->wValue = %04X\n", le32_to_cpu(event->wValue));
+	dev_info(&dev->intf->dev, "event->wIndex = %04X\n", le32_to_cpu(event->wIndex));
+	dev_info(&dev->intf->dev, "event->wLength = %04X\n", le32_to_cpu(event->wLength));
+*/
 	switch (event->bNotificationType) {
 	case USB_CDC_NOTIFY_NETWORK_CONNECTION:
 		/*
@@ -2105,8 +2113,8 @@ static void cdc_ncm_status(struct usbnet* dev, struct urb* urb)
 		 /* RTL8156 shipped before 2021 sends notification about
 		  * every 32ms. Don't forward notification if state is same.
 		  */
-		if (netif_carrier_ok(dev->net) != !!event->wValue)
-			usbnet_link_change(dev, !!event->wValue, 0);
+		if (netif_carrier_ok(dev->net) != event->wValue)
+			usbnet_link_change(dev, event->wValue, 0);
 		break;
 
 	case USB_CDC_NOTIFY_SPEED_CHANGE:
@@ -2117,7 +2125,36 @@ static void cdc_ncm_status(struct usbnet* dev, struct urb* urb)
 			cdc_ncm_speed_change(dev,
 				(struct usb_cdc_speed_change*)&event[1]);
 		break;
-
+	case USB_CDC_NOTIFY_UNIFIED_MEDIUM_STATE:
+		medium_struct = (struct usb_cdc_ncm_medium_struct*)&event[1];
+		dev_info(&dev->intf->dev, "medium_struct->bMediumType = %04X\n", le32_to_cpu(medium_struct->bMediumType));
+		dev_info(&dev->intf->dev, "medium_struct->bmFeatureFlags = %04X\n", le32_to_cpu(medium_struct->bmFeatureFlags));
+		dev_info(&dev->intf->dev, "medium_struct->dwSpeed = %04X\n", le32_to_cpu(medium_struct->dwSpeed));
+		dev_info(&dev->intf->dev, "medium_struct->bmMediumParameters = %04X\n", le32_to_cpu(medium_struct->bmMediumParameters));
+		if (medium_struct->dwSpeed ==0x00000000){
+			//link off
+			usbnet_link_change(dev, 0, 0);
+		}else {
+			usbnet_link_change(dev, 1, 0);
+			if (medium_struct->dwSpeed ==0x4F1502f9){
+				//2.5G
+				dev->rx_speed = le32_to_cpu(2500000000);
+				dev->tx_speed = le32_to_cpu(2500000000);
+			}else if (medium_struct->dwSpeed ==0x4E6E6B28){
+				//1000M
+				dev->rx_speed = le32_to_cpu(1000000000);
+				dev->tx_speed = le32_to_cpu(1000000000);
+			}else if (medium_struct->dwSpeed ==0x4CBEBC20){
+				//100M
+				dev->rx_speed = le32_to_cpu(100000000);
+				dev->tx_speed = le32_to_cpu(100000000);
+			}else if (medium_struct->dwSpeed ==0x4B189680){
+				//10M
+				dev->rx_speed = le32_to_cpu(10000000);
+				dev->tx_speed = le32_to_cpu(10000000);
+			}
+		}
+		break;
 	default:
 		dev_dbg(&dev->udev->dev,
 			"NCM: unexpected notification 0x%02x!\n",
